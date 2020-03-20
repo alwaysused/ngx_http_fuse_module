@@ -5,26 +5,32 @@
 
 
 typedef struct {
-	ngx_str_t deny_ip;
+    ngx_array_t *rules;
 } ngx_http_fuse_conf_t;
+
+typedef struct {
+    in_addr_t         mask;
+    in_addr_t         addr;
+    
+} ngx_http_access_rule_t;
 
 static ngx_int_t ngx_http_fuse_handler(ngx_http_request_t *r);
 static void *ngx_http_fuse_create_conf(ngx_conf_t *cf);
 static ngx_int_t ngx_http_fuse_init(ngx_conf_t *cf);
-
+static char *ngx_http_deny_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static char *ngx_http_fuse_merge_conf(ngx_conf_t *cf, void *parent, void *child);
 
 static void *ngx_http_fuse_create_conf(ngx_conf_t *cf);
-
+extern  ngx_http_access_rule_t;
 static ngx_command_t ngx_http_fuse_commands[] =
 {
     {
         ngx_string("deny_ip"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF| NGX_CONF_TAKE1,
-        ngx_conf_set_str_slot,
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF| NGX_CONF_1MORE,
+        ngx_http_deny_rule,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_fuse_conf_t, deny_ip),
+        offsetof(ngx_http_fuse_conf_t, rules),
         NULL
     },
 
@@ -32,7 +38,7 @@ static ngx_command_t ngx_http_fuse_commands[] =
 };
 
 static ngx_http_module_t ngx_http_fuse_module_ctx = {
-	
+    
     // preconfiguration: 在创建和读取该模块的配置信息之前被调用
     NULL,
     // postconfiguration: 在创建和读取该模块的配置信息之后被调用
@@ -76,10 +82,81 @@ ngx_module_t ngx_http_fuse_module =
 
 
 
+static 
+char *
+ngx_http_deny_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
+     ngx_http_fuse_conf_t *fusecf;
 
+    
+     fusecf = conf;
+
+    if (fusecf == NULL)
+    {
+        return NULL;
+    }
+
+
+    ngx_int_t                   rc;
+    ngx_uint_t                  all;
+    ngx_str_t                  *value;
+    ngx_cidr_t                  cidr;
+    ngx_http_access_rule_t     *rule;
+
+    ngx_uint_t                  length;
+    ngx_uint_t                  t;
+ ngx_uint_t                 i;
+
+    
+
+    value = cf->args->elts;
+
+    length = cf->args->nelts;
+
+    if (fusecf->rules == NULL) {
+            fusecf->rules = ngx_array_create(cf->pool, length - 1,
+                                           sizeof(ngx_http_access_rule_t));
+            if (fusecf->rules == NULL) {
+                return NGX_CONF_ERROR;
+            }
+        }
+
+
+//printf("length is %d\n", length);
+    for (i = 1; i < length; i ++ ){
+
+    ngx_memzero(&cidr, sizeof(ngx_cidr_t));
+    rc = ngx_ptocidr(&value[i], &cidr);
+
+        if (rc == NGX_ERROR) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid parameter \"%V\"", &value[1]);
+            return NGX_CONF_ERROR;
+        }
+
+        if (rc == NGX_DONE) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                         "low address bits of %V are meaningless", &value[1]);
+        }
+
+        //printf("1\n");
+
+        rule = ngx_array_push(fusecf->rules);
+        if (rule == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        rule->mask = cidr.u.in.mask;
+        rule->addr = cidr.u.in.addr;
+
+    
+    }
+    printf("cc0  %d\n", fusecf->rules->nelts );
+
+    return NGX_CONF_OK;
+}
 
 static ngx_int_t ngx_http_fuse_init(ngx_conf_t *cf){
-	ngx_http_handler_pt        *h;
+    ngx_http_handler_pt        *h;
     ngx_http_core_main_conf_t  *cmcf;
 
     // 获取全局配置变量，从中拿到各个 Nginx 各个执行模块的数组
@@ -100,9 +177,13 @@ static ngx_int_t ngx_http_fuse_init(ngx_conf_t *cf){
 
 static char *ngx_http_fuse_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-	ngx_http_fuse_conf_t *prev = parent;
-	ngx_http_fuse_conf_t *conf = child;
-	ngx_conf_merge_str_value(conf->deny_ip, prev->deny_ip, '"');
+    ngx_http_fuse_conf_t *prev = parent;
+printf("cc1  %d\n", prev->rules );
+    ngx_http_fuse_conf_t *conf = child;
+printf("cc2  %d\n", conf->rules );
+    if (conf->rules == NULL) {                                     
+        conf->rules =  (prev->rules == NULL) ? NULL : prev->rules;                
+    }
     return NGX_CONF_OK;
 }
 
@@ -126,21 +207,27 @@ static void *ngx_http_fuse_create_conf(ngx_conf_t *cf)
 }
 static ngx_int_t ngx_http_fuse_handler(ngx_http_request_t *r){
 //return NGX_HTTP_SERVICE_UNAVAILABLE;
-	
-	struct sockaddr_in         *sin;
+    
+    ngx_uint_t   i;
+        ngx_http_access_rule_t  *rule;
+    struct sockaddr_in         *sin;
+    ngx_http_fuse_conf_t *fusecf;
+     fusecf = ngx_http_get_module_loc_conf(r, ngx_http_fuse_module);
+    
+printf("cc  %d\n", fusecf->rules );
+        sin = (struct sockaddr_in *) r->connection->sockaddr;
+    rule = fusecf->rules->elts;
+    
+    for (i = 0; i < fusecf->rules->nelts; i++) {
 
-	sin = (struct sockaddr_in *) r->connection->sockaddr;
+        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "access: %08XD %08XD %08XD",
+                       addr, rule[i].mask, rule[i].addr);
 
+        if ((sin->sin_addr.s_addr & rule[i].mask) == rule[i].addr) {
+            return NGX_HTTP_SERVICE_UNAVAILABLE;
+        }
+    }
 
-	 ngx_http_fuse_conf_t *fusecf;
-	 fusecf = ngx_http_get_module_loc_conf(r, ngx_http_fuse_module);
-
-	 ngx_int_t cur_addr = ngx_inet_addr(fusecf->deny_ip.data, fusecf->deny_ip.len);
-	//printf("curadd is %s\n", fusecf->deny_ip.data);
-//printf("curl add len is %d\n", fusecf->deny_ip.len);
-	//printf("%d\n", cur_addr);
-	 if (cur_addr == sin->sin_addr.s_addr) {
-	 	return NGX_HTTP_SERVICE_UNAVAILABLE;
-	 }
-	 return NGX_DECLINED;
+    return NGX_DECLINED;
 }
