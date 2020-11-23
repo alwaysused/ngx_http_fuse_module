@@ -3,7 +3,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-//
+//sdadasda
 typedef struct {
     ngx_array_t *rules;
 } ngx_http_fuse_conf_t;
